@@ -315,4 +315,16 @@ async function handle(req:Request,env:Env){
   }
   return json({error:"Not found"},404,env,req);
 }
-export default {fetch(req:Request,env:Env){return handle(req,env).catch(e=>json({error:"Internal server error"},500,env,req));}};
+function applyCors(response:Response,req:Request,env:Env):Response {
+  const headers=new Headers(response.headers);
+  headers.append("vary","Origin");
+  const origin=req.headers.get("Origin");
+  const allowed=(env.APP_ORIGIN||"").split(",").map(x=>x.trim()).filter(Boolean);
+  if(origin&&allowed.includes(origin))headers.set("access-control-allow-origin",origin);
+  else headers.delete("access-control-allow-origin");
+  return new Response(response.body,{status:response.status,statusText:response.statusText,headers});
+}
+export default {async fetch(req:Request,env:Env){
+  try{return applyCors(await handle(req,env),req,env);}
+  catch(e){return applyCors(json({error:"Internal server error"},500,env,req),req,env);}
+}};
