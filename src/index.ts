@@ -304,7 +304,11 @@ async function handle(req:Request,env:Env){
       headers.set("x-content-type-options","nosniff");
       headers.set("x-frame-options","DENY");
       headers.set("referrer-policy","no-referrer");
-      headers.set("content-security-policy","default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self'; upgrade-insecure-requests");
+      const nonce=b64(crypto.getRandomValues(new Uint8Array(18)));
+      const html=await asset.text();
+      const securedHtml=html.replace(/<script(\\s|>)/gi,(_m,tail)=>'<script nonce="'+nonce+'"'+tail)
+        .replace(/<style(\\s|>)/gi,(_m,tail)=>'<style nonce="'+nonce+'"'+tail);
+      headers.set("content-security-policy","default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self' 'nonce-"+nonce+"'; style-src 'self' 'nonce-"+nonce+"'; style-src-attr 'none'; img-src 'self' data: https:; connect-src 'self'; upgrade-insecure-requests");
       headers.set("vary","Origin");
       const origin=req.headers.get("Origin"),allowed=(env.APP_ORIGIN||"").split(",").map(x=>x.trim()).filter(Boolean);
       if(origin&&allowed.includes(origin))headers.set("access-control-allow-origin",origin);
