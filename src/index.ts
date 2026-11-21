@@ -132,7 +132,7 @@ async function admin(req:Request,env:Env){
   const supplied=req.headers.get("x-admin-secret")||"";
   const valid=!!env.ADMIN_SECRET&&await adminSecretMatches(supplied,env.ADMIN_SECRET);
   if(!valid){
-    await cache.put(rateKey,new Response(JSON.stringify({count:state.count+1}),{headers:{"content-type":"application/json"}}),{expirationTtl:300});
+    await cache.put(rateKey,new Response(JSON.stringify({count:state.count+1}),{headers:{"content-type":"application/json","cache-control":"max-age=300"}}));
     return json({error:"Unauthorized admin access"},401,env,req);
   }
   await cache.delete(rateKey);
