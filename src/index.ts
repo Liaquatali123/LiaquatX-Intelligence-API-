@@ -9,35 +9,61 @@ interface Env {
 }
 const PLAN_LIMITS: Record<string, number> = { free: 100, starter: 5000, pro: 30000, business: 150000 };
 const PLANS = ["free", "starter", "pro", "business"];
-const json = (data: unknown, status=200, env?: Env) => new Response(JSON.stringify(data,null,2), {
-  status, headers: { "content-type":"application/json; charset=utf-8", "cache-control":"no-store",
-    "access-control-allow-origin": env?.APP_ORIGIN || "*", "access-control-allow-methods":"GET,POST,PATCH,OPTIONS",
-    "access-control-allow-headers":"content-type,authorization,x-api-key,x-admin-secret",
-    "x-content-type-options":"nosniff", "referrer-policy":"strict-origin-when-cross-origin" }
-});
+function corsHeaders(req:Request,env?:Env):Headers {
+  const h=new Headers({"access-control-allow-methods":"GET,POST,PATCH,OPTIONS","access-control-allow-headers":"content-type,authorization,x-api-key,x-admin-secret","vary":"Origin"});
+  const origin=req.headers.get("Origin");
+  const allowed=(env?.APP_ORIGIN||"").split(",").map(x=>x.trim()).filter(Boolean);
+  if(origin && allowed.includes(origin))h.set("access-control-allow-origin",origin);
+  return h;
+}
+const json = (data: unknown, status=200, env?: Env, req?:Request) => {
+  const headers=corsHeaders(req||new Request("https://worker.invalid"),env);
+  headers.set("content-type","application/json; charset=utf-8");
+  headers.set("cache-control","no-store");
+  headers.set("x-content-type-options","nosniff");
+  headers.set("referrer-policy","no-referrer");
+  return new Response(JSON.stringify(data,null,2),{status,headers});
+};
 const uid = () => crypto.randomUUID();
 const b64 = (b: Uint8Array) => btoa(String.fromCharCode(...b)).replace(/\+/g,"-").replace(/\//g,"_").replace(/=/g,"");
 async function hash(s:string) { const d=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(s)); return b64(new Uint8Array(d)); }
 function token(){ return "lx_live_"+b64(crypto.getRandomValues(new Uint8Array(32))); }
-function safeTarget(raw:string):URL {
-  let u:URL; try { u=new URL(raw.includes("://")?raw:"https://"+raw); } catch { throw new Error("Invalid URL"); }
-  if (!["http:","https:"].includes(u.protocol) || u.username || u.password) throw new Error("Only public HTTP/HTTPS URLs are allowed");
-  if (u.port && !["80","443"].includes(u.port)) throw new Error("Only standard web ports are allowed");
-  const h=u.hostname.toLowerCase().replace(/^\[|\]$/g,"");
-  if (!h.includes(".") || h==="localhost" || h.endsWith(".localhost") || h.endsWith(".local") || h.endsWith(".internal") ||
-      /^(127\.|10\.|192\.168\.|169\.254\.|0\.)/.test(h) || /^172\.(1[6-9]|2\d|3[01])\./.test(h) ||
-      h==="::1" || h.startsWith("fc") || h.startsWith("fd") || h.startsWith("fe80:")) throw new Error("Private or local network targets are blocked");
-  u.hash=""; return u;
+function isBlockedIPv4(host:string):boolean {
+  const parts=host.split(".");
+  if(parts.length!==4||parts.some(p=>!/^\d{1,3}$/.test(p)||Number(p)>255))return false;
+  const [a,b,c]=parts.map(Number);
+  return a===0||a===10||a===127||a>=224||
+    (a===100&&b>=64&&b<=127)||
+    (a===169&&b===254)||
+    (a===172&&b>=16&&b<=31)||
+    (a===192&&b===168)||
+    (a===192&&b===0&&c===0)||
+    (a===198&&(b===18||b===19));
 }
-async function fetchTarget(u:URL, method:"GET"|"HEAD"="GET") {
-  let current=u;
-  for(let i=0;i<4;i++){
-    const r=await fetch(current.toString(),{method,redirect:"manual",signal:AbortSignal.timeout(8000),headers:{"user-agent":"LiaquatX-Intelligence/1.1"}});
-    if([301,302,303,307,308].includes(r.status)){
-      const loc=r.headers.get("location"); if(!loc) return r;
-      current=safeTarget(new URL(loc,current).toString()); continue;
-    }
-    return r;
+function safeTarget(raw:string):URL {
+  let u:URL;
+  try { u=new URL(raw.includes("://")?raw:"https://"+raw); } catch { throw new Error("Invalid URL"); }
+  if(!["http:","https:"].includes(u.protocol)||u.username||u.password)throw new Error("Only public HTTP/HTTPS URLs without embedded credentials are allowed");
+  if(u.port&& !["80","443"].includes(u.port))throw new Error("Only standard web ports are allowed");
+  const h=u.hostname.toLowerCase().replace(/^\[|\]$/g,"").replace(/\.$/,"");
+  const metadataHosts=["metadata","metadata.google","metadata.google.internal","metadata.tencentyun.com","metadata.azure.internal","metadata.oraclecloud.com","instance-data"];
+  if(!h.includes(".")||h==="localhost"||h.endsWith(".localhost")||h.endsWith(".local")||h.endsWith(".internal")||
+     metadataHosts.includes(h)||h.endsWith(".metadata.google.internal")||h.includes(":")||h.startsWith("[")||
+     isBlockedIPv4(h)||h==="169.254.169.254"||h==="100.100.100.200") {
+    throw new Error("Private, local, metadata, or IP-literal targets are blocked");
+  }
+  u.hash="";return u;
+}
+async function safeFetch(input:URL|string,method:"GET"|"HEAD"="GET") {
+  let current=safeTarget(input instanceof URL?input.toString():input);
+  const chain:Array<{url:string,status:number,location:string|null}>=[];
+  for(let hop=0;hop<=3;hop++){
+    const response=await fetch(current.toString(),{method,redirect:"manual",signal:AbortSignal.timeout(8000),headers:{"user-agent":"LiaquatX-Intelligence/2.0"}});
+    const location=response.headers.get("location");
+    chain.push({url:current.toString(),status:response.status,location});
+    if(![301,302,303,307,308].includes(response.status)||!location)return {response,finalUrl:current,chain};
+    if(hop===3)throw new Error("Too many redirects (maximum 3)");
+    current=safeTarget(new URL(location,current).toString());
   }
   throw new Error("Too many redirects");
 }
@@ -68,7 +94,7 @@ async function inspect(req:Request,env:Env,kind:string){
   const raw=new URL(req.url).searchParams.get("url"); if(!raw)return json({error:"Missing url query parameter"},400,env);
   let target:URL;try{target=safeTarget(raw);}catch(e){return json({error:(e as Error).message},400,env);}
   try{
-    const r=await fetchTarget(target,kind==="check"?"HEAD":"GET");
+    const {response:r}=await safeFetch(target,kind==="check"?"HEAD":"GET");
     const base:any={url:target.toString(),status_code:r.status,reachable:r.status<500,checked_at:new Date().toISOString()};
     if(kind==="check")return json({ok:true,data:{...base,response_time_ms:0,server:r.headers.get("server")}},200,env);
     if(kind==="headers"){
@@ -84,20 +110,44 @@ async function inspect(req:Request,env:Env,kind:string){
     return json({ok:true,data:{...base,technologies:[...new Set(tech)],title}},200,env);
   }catch(e){return json({error:"Analysis failed",detail:(e as Error).message},502,env);}
 }
+async function sha256Bytes(value:string):Promise<Uint8Array>{
+  return new Uint8Array(await crypto.subtle.digest("SHA-256",new TextEncoder().encode(value)));
+}
+function constantTimeBytesEqual(a:Uint8Array,b:Uint8Array):boolean {
+  if(a.length!==b.length)return false;
+  let diff=0;for(let i=0;i<a.length;i++)diff|=a[i]^b[i];
+  return diff===0;
+}
+async function adminSecretMatches(provided:string,expected:string):Promise<boolean>{
+  const [a,b]=await Promise.all([sha256Bytes(provided),sha256Bytes(expected)]);
+  return constantTimeBytesEqual(a,b);
+}
 async function admin(req:Request,env:Env){
-  if(!env.ADMIN_SECRET || req.headers.get("x-admin-secret")!==env.ADMIN_SECRET) return json({error:"Unauthorized admin access"},401,env);
+  const ip=req.headers.get("CF-Connecting-IP")||"unknown";
+  const rateKey=new Request("https://liaquatx-admin-rate-limit.invalid/"+encodeURIComponent(ip));
+  const cache=caches.default;
+  const cached=await cache.match(rateKey);
+  const state=cached?await cached.json<{count:number}>():{count:0};
+  if(state.count>=5)return json({error:"Too many failed admin authentication attempts. Try again in 5 minutes."},429,env,req);
+  const supplied=req.headers.get("x-admin-secret")||"";
+  const valid=!!env.ADMIN_SECRET&&await adminSecretMatches(supplied,env.ADMIN_SECRET);
+  if(!valid){
+    await cache.put(rateKey,new Response(JSON.stringify({count:state.count+1}),{headers:{"content-type":"application/json"}}),{expirationTtl:300});
+    return json({error:"Unauthorized admin access"},401,env,req);
+  }
+  await cache.delete(rateKey);
   const url=new URL(req.url), path=url.pathname, day=new Date().toISOString().slice(0,10);
   if(path==="/v1/admin/overview" && req.method==="GET"){
     const row=await env.DB.prepare("SELECT (SELECT COUNT(*) FROM users) AS total_users,(SELECT COUNT(*) FROM api_keys WHERE revoked=0) AS active_keys,(SELECT COALESCE(SUM(request_count),0) FROM usage_daily WHERE day=?) AS requests_today,(SELECT COUNT(*) FROM payment_requests WHERE status='pending') AS pending_payments").bind(day).first<any>();
-    return json({ok:true,stats:row},200,env);
+    return json({ok:true,stats:row},200,env,req);
   }
   if(path==="/v1/admin/users" && req.method==="GET"){
     const rows=await env.DB.prepare("SELECT u.id,u.email,u.plan,u.status,u.created_at,(SELECT COUNT(*) FROM api_keys k WHERE k.user_id=u.id AND k.revoked=0) AS active_keys,(SELECT COALESCE(request_count,0) FROM usage_daily d WHERE d.user_id=u.id AND d.day=?) AS requests_today FROM users u ORDER BY u.created_at DESC LIMIT 200").bind(day).all<any>();
-    return json({ok:true,users:rows.results||[]},200,env);
+    return json({ok:true,users:rows.results||[]},200,env,req);
   }
   if(path==="/v1/admin/keys" && req.method==="GET"){
     const rows=await env.DB.prepare("SELECT k.id,k.key_prefix,k.label,k.revoked,k.created_at,k.last_used_at,u.email,u.plan FROM api_keys k JOIN users u ON u.id=k.user_id ORDER BY k.created_at DESC LIMIT 200").all<any>();
-    return json({ok:true,keys:rows.results||[]},200,env);
+    return json({ok:true,keys:rows.results||[]},200,env,req);
   }
   if(path==="/v1/admin/keys" && req.method==="POST"){
     const body:any=await req.json().catch(()=>({})), email=String(body.email||"").trim().toLowerCase(), plan=String(body.plan||"free"), label=String(body.label||"Default").slice(0,80);
@@ -107,13 +157,13 @@ async function admin(req:Request,env:Env){
     else await env.DB.prepare("UPDATE users SET plan=? WHERE id=?").bind(plan,user.id).run();
     const key=token(), id=uid();
     await env.DB.prepare("INSERT INTO api_keys(id,user_id,key_hash,key_prefix,label) VALUES(?,?,?,?,?)").bind(id,user.id,await hash(key),key.slice(0,15),label).run();
-    return json({ok:true,email,plan,api_key:key,note:"Copy this key now. It is shown only once."},201,env);
+    return json({ok:true,email,plan,api_key:key,note:"Copy this key now. It is shown only once."},201,env,req);
   }
   const revoke=path.match(/^\/v1\/admin\/keys\/([a-f0-9-]+)\/revoke$/i);
   if(revoke && req.method==="POST"){
     const r=await env.DB.prepare("UPDATE api_keys SET revoked=1 WHERE id=?").bind(revoke[1]).run();
     if(!r.meta?.changes)return json({error:"API key not found"},404,env);
-    return json({ok:true,message:"API key revoked"},200,env);
+    return json({ok:true,message:"API key revoked"},200,env,req);
   }
   const userMatch=path.match(/^\/v1\/admin\/users\/([a-f0-9-]+)$/i);
   if(userMatch && req.method==="PATCH"){
@@ -123,7 +173,7 @@ async function admin(req:Request,env:Env){
     if(plan===null&&status===null)return json({error:"No supported changes supplied"},400,env);
     const r=await env.DB.prepare("UPDATE users SET plan=COALESCE(?,plan),status=COALESCE(?,status) WHERE id=?").bind(plan,status,userMatch[1]).run();
     if(!r.meta?.changes)return json({error:"User not found or unchanged"},404,env);
-    return json({ok:true,message:"User updated"},200,env);
+    return json({ok:true,message:"User updated"},200,env,req);
   }
   return json({error:"Admin endpoint not found"},404,env);
 }
@@ -208,21 +258,20 @@ async function websiteTool(req:Request,env:Env,kind:string){
     if(kind==="redirects"){
       let current=target;const chain:any[]=[];
       for(let i=0;i<10;i++){
-        const r=await fetch(current.toString(),{method:"GET",redirect:"manual",signal:AbortSignal.timeout(8000),headers:{"user-agent":"LiaquatX-Intelligence/2.0"}});
-        const loc=r.headers.get("location");
-        chain.push({url:current.toString(),status_code:r.status,location:loc});
-        if(![301,302,303,307,308].includes(r.status)||!loc)break;
-        current=safeTarget(new URL(loc,current).toString());
+        const {response:r,chain:redirectChain}=await safeFetch(current,"GET");
+        for(const hop of redirectChain)chain.push({url:hop.url,status_code:hop.status,location:hop.location});
+        current=new URL(redirectChain[redirectChain.length-1].url);
+        break;
       }
       return json({ok:true,start_url:target.toString(),final_url:chain[chain.length-1]?.url,redirect_count:Math.max(0,chain.length-1),chain},200,env);
     }
     if(kind==="broken-links"){
-      const r=await fetchTarget(target,"GET"),html=await limitedText(r);
+      const {response:r}=await safeFetch(target,"GET"),html=await limitedText(r);
       const found=[...html.matchAll(/(?:href|src)\s*=\s*["']([^"'#]+)["']/gi)].map(m=>m[1]);
       const links=[...new Set(found.map(x=>{try{return new URL(x,target).toString()}catch{return ""}}).filter(x=>x.startsWith("http://")||x.startsWith("https://")))].slice(0,30);
       const results:any[]=[];
       for(const link of links){
-        try{const u=safeTarget(link),res=await fetch(u.toString(),{method:"HEAD",redirect:"manual",signal:AbortSignal.timeout(5000),headers:{"user-agent":"LiaquatX-Intelligence/2.0"}});results.push({url:link,status_code:res.status,broken:res.status>=400});}
+        try{const {response:res}=await safeFetch(link,"HEAD");results.push({url:link,status_code:res.status,broken:res.status>=400});}
         catch(e){results.push({url:link,status_code:null,broken:true,error:(e as Error).message});}
       }
       return json({ok:true,url:target.toString(),links_checked:results.length,broken_count:results.filter(x=>x.broken).length,results,limit:30},200,env);
@@ -233,8 +282,8 @@ async function websiteTool(req:Request,env:Env,kind:string){
 
 async function handle(req:Request,env:Env){
   const u=new URL(req.url);
-  if(req.method==="OPTIONS")return new Response(null,{headers:{"access-control-allow-origin":env.APP_ORIGIN||"*","access-control-allow-methods":"GET,POST,PATCH,OPTIONS","access-control-allow-headers":"content-type,authorization,x-api-key,x-admin-secret"}});
-  if(u.pathname==="/health")return json({ok:true,name:env.APP_NAME,version:"1.2.0"},200,env);
+  if(req.method==="OPTIONS")return new Response(null,{headers:corsHeaders(req,env)});
+  if(u.pathname==="/health")return json({ok:true,name:env.APP_NAME,version:"1.2.0"},200,env,req);
   if(u.pathname.startsWith("/v1/admin/"))return admin(req,env);
   if(u.pathname==="/v1/account/usage"){
     const user=await apiUser(req,env);if(!user)return json({error:"Valid API key required"},401,env);
@@ -247,7 +296,23 @@ async function handle(req:Request,env:Env){
   if(domainRoutes[u.pathname])return domainTool(req,env,domainRoutes[u.pathname]);
   const websiteRoutes:{[key:string]:string}={"/v1/website/redirects":"redirects","/v1/website/screenshot":"screenshot","/v1/website/pagespeed":"pagespeed","/v1/website/broken-links":"broken-links"};
   if(websiteRoutes[u.pathname])return websiteTool(req,env,websiteRoutes[u.pathname]);
-  if(env.ASSETS&&req.method==="GET"&&!u.pathname.startsWith("/v1/"))return env.ASSETS.fetch(req);
-  return json({error:"Not found"},404,env);
+  if(env.ASSETS&&req.method==="GET"&&!u.pathname.startsWith("/v1/")){
+    const asset=await env.ASSETS.fetch(req);
+    const type=asset.headers.get("content-type")||"";
+    if(type.includes("text/html")){
+      const headers=new Headers(asset.headers);
+      headers.set("x-content-type-options","nosniff");
+      headers.set("x-frame-options","DENY");
+      headers.set("referrer-policy","no-referrer");
+      headers.set("content-security-policy","default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self'; upgrade-insecure-requests");
+      headers.set("vary","Origin");
+      const origin=req.headers.get("Origin"),allowed=(env.APP_ORIGIN||"").split(",").map(x=>x.trim()).filter(Boolean);
+      if(origin&&allowed.includes(origin))headers.set("access-control-allow-origin",origin);
+      else headers.delete("access-control-allow-origin");
+      return new Response(asset.body,{status:asset.status,statusText:asset.statusText,headers});
+    }
+    return asset;
+  }
+  return json({error:"Not found"},404,env,req);
 }
-export default {fetch(req:Request,env:Env){return handle(req,env).catch(e=>json({error:"Internal server error"},500,env));}};
+export default {fetch(req:Request,env:Env){return handle(req,env).catch(e=>json({error:"Internal server error"},500,env,req));}};
