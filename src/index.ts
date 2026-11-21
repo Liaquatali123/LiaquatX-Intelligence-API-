@@ -301,6 +301,10 @@ async function handle(req:Request,env:Env){
     const type=asset.headers.get("content-type")||"";
     if(type.includes("text/html")){
       const headers=new Headers(asset.headers);
+      headers.delete("content-length");
+      headers.delete("content-encoding");
+      headers.delete("etag");
+      headers.delete("content-md5");
       headers.set("x-content-type-options","nosniff");
       headers.set("x-frame-options","DENY");
       headers.set("referrer-policy","no-referrer");
