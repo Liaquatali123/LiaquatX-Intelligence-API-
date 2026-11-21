@@ -1,10 +1,10 @@
 openapi: 3.1.0
 info:
   title: LiaquatX Intelligence API
-  version: 1.1.0
-  description: Website health, SEO metadata, security headers and technology detection.
+  version: 2.0.0
+  description: Rule-based website and domain intelligence tools. No AI features.
 servers:
-  - url: https://YOUR-WORKER.workers.dev
+  - url: https://liaquatx-intelligence-api.rdxkinglucky.workers.dev
 components:
   securitySchemes:
     ApiKey:
@@ -17,6 +17,13 @@ components:
       in: query
       required: true
       schema: { type: string, format: uri }
+    Domain:
+      name: domain
+      in: query
+      required: true
+      schema: { type: string, example: example.com }
+security:
+  - ApiKey: []
 paths:
   /health:
     get:
@@ -24,25 +31,61 @@ paths:
       responses: {'200': {description: Worker health}}
   /v1/website/check:
     get:
-      security: [{ApiKey: []}]
       parameters: [{$ref: '#/components/parameters/TargetUrl'}]
-      responses: {'200': {description: Website status}}
+      responses: {'200': {description: Website status and response time}}
   /v1/website/seo:
     get:
-      security: [{ApiKey: []}]
       parameters: [{$ref: '#/components/parameters/TargetUrl'}]
       responses: {'200': {description: SEO metadata}}
   /v1/website/headers:
     get:
-      security: [{ApiKey: []}]
       parameters: [{$ref: '#/components/parameters/TargetUrl'}]
       responses: {'200': {description: Security header report}}
   /v1/website/technologies:
     get:
-      security: [{ApiKey: []}]
       parameters: [{$ref: '#/components/parameters/TargetUrl'}]
       responses: {'200': {description: Technology fingerprints}}
+  /v1/website/redirects:
+    get:
+      parameters: [{$ref: '#/components/parameters/TargetUrl'}]
+      responses: {'200': {description: Redirect chain}}
+  /v1/website/broken-links:
+    get:
+      parameters: [{$ref: '#/components/parameters/TargetUrl'}]
+      responses: {'200': {description: Checks up to 30 page links}}
+  /v1/website/screenshot:
+    get:
+      parameters: [{$ref: '#/components/parameters/TargetUrl'}]
+      responses: {'200': {description: Screenshot provider URL}}
+  /v1/website/pagespeed:
+    get:
+      parameters:
+        - {$ref: '#/components/parameters/TargetUrl'}
+        - name: strategy
+          in: query
+          schema: {type: string, enum: [desktop, mobile], default: desktop}
+      responses: {'200': {description: Lighthouse performance and category scores}}
+  /v1/website/dns:
+    get:
+      parameters: [{$ref: '#/components/parameters/Domain'}]
+      responses: {'200': {description: DNS A AAAA MX NS TXT CNAME and SOA records}}
+  /v1/website/ssl:
+    get:
+      parameters: [{$ref: '#/components/parameters/Domain'}]
+      responses: {'200': {description: SSL Labs certificate and grade report}}
+  /v1/domain/whois:
+    get:
+      parameters: [{$ref: '#/components/parameters/Domain'}]
+      responses: {'200': {description: RDAP registration and nameserver information}}
+  /v1/domain/availability:
+    get:
+      parameters: [{$ref: '#/components/parameters/Domain'}]
+      responses: {'200': {description: RDAP-based domain registration status}}
+  /v1/domain/backlinks:
+    get:
+      parameters: [{$ref: '#/components/parameters/Domain'}]
+      responses: {'200': {description: Open PageRank provider response}}
+      description: Requires the OPENPAGERANK_API_KEY Cloudflare Worker secret.
   /v1/account/usage:
     get:
-      security: [{ApiKey: []}]
       responses: {'200': {description: API usage}}
