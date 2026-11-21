@@ -1,5 +1,5 @@
 {
   "name":"liaquatx-intelligence-api","version":"1.1.0","private":true,"type":"module",
   "scripts":{"dev":"wrangler dev","deploy":"wrangler deploy","typecheck":"tsc --noEmit","db:local":"wrangler d1 execute liaquatx-db --local --file=./db/schema.sql","db:remote":"wrangler d1 execute liaquatx-db --remote --file=./db/schema.sql"},
-  "devDependencies":{"@cloudflare/workers-types":"^4.20261118.0","typescript":"^5.7.3","wrangler":"^4.48.0"}
+  "devDependencies":{"@cloudflare/workers-types":"^5.20261120.1","typescript":"^5.7.3","wrangler":"^4.48.0"}
 }
