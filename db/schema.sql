@@ -1,0 +1,8 @@
+PRAGMA foreign_keys = ON;
+CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY,email TEXT NOT NULL UNIQUE,password_salt TEXT NOT NULL DEFAULT '',password_hash TEXT NOT NULL DEFAULT '',plan TEXT NOT NULL DEFAULT 'free',plan_expires_at TEXT,status TEXT NOT NULL DEFAULT 'active',created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS api_keys (id TEXT PRIMARY KEY,user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,key_hash TEXT NOT NULL UNIQUE,key_prefix TEXT NOT NULL,label TEXT NOT NULL DEFAULT 'Default',revoked INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,last_used_at TEXT);
+CREATE TABLE IF NOT EXISTS usage_daily (user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,day TEXT NOT NULL,request_count INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(user_id,day));
+CREATE TABLE IF NOT EXISTS payment_requests (id TEXT PRIMARY KEY,user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,plan TEXT NOT NULL,amount_usd INTEGER NOT NULL,status TEXT NOT NULL DEFAULT 'pending',reference TEXT,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash);
+CREATE INDEX IF NOT EXISTS idx_usage_day ON usage_daily(day,user_id);
+CREATE INDEX IF NOT EXISTS idx_payments_status ON payment_requests(status,created_at);
