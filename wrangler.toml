@@ -10,7 +10,7 @@ database_id = "REPLACE_WITH_D1_DATABASE_ID"
 
 [vars]
 APP_NAME = "LiaquatX Intelligence API"
-APP_ORIGIN = "*"
+APP_ORIGIN = "https://liaquatx-intelligence-api.rdxkinglucky.workers.dev"
 
 [assets]
 directory = "./public"
