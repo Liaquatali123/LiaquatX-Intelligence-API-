@@ -306,14 +306,14 @@ async function handle(req:Request,env:Env){
       headers.set("referrer-policy","no-referrer");
       const nonce=b64(crypto.getRandomValues(new Uint8Array(18)));
       const html=await asset.text();
-      const securedHtml=html.replace(/<script(\\s|>)/gi,(_m,tail)=>'<script nonce="'+nonce+'"'+tail)
-        .replace(/<style(\\s|>)/gi,(_m,tail)=>'<style nonce="'+nonce+'"'+tail);
+      const securedHtml=html.replace(//<script(\s|>)/gi,(_m,tail)=>'<script nonce="'+nonce+'"'+tail)
+        .replace(//<style(\s|>)/gi,(_m,tail)=>'<style nonce="'+nonce+'"'+tail);
       headers.set("content-security-policy","default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self' 'nonce-"+nonce+"'; style-src 'self' 'nonce-"+nonce+"'; style-src-attr 'none'; img-src 'self' data: https:; connect-src 'self'; upgrade-insecure-requests");
       headers.set("vary","Origin");
       const origin=req.headers.get("Origin"),allowed=(env.APP_ORIGIN||"").split(",").map(x=>x.trim()).filter(Boolean);
       if(origin&&allowed.includes(origin))headers.set("access-control-allow-origin",origin);
       else headers.delete("access-control-allow-origin");
-      return new Response(asset.body,{status:asset.status,statusText:asset.statusText,headers});
+      return new Response(securedHtml,{status:asset.status,statusText:asset.statusText,headers});
     }
     return asset;
   }
