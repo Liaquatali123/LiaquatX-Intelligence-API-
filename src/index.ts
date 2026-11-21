@@ -7,9 +7,10 @@ interface Env {
   BINANCE_PAY_ID?: string;
 }
 const PLAN_LIMITS: Record<string, number> = { free: 100, starter: 5000, pro: 30000, business: 150000 };
+const PLANS = ["free", "starter", "pro", "business"];
 const json = (data: unknown, status=200, env?: Env) => new Response(JSON.stringify(data,null,2), {
   status, headers: { "content-type":"application/json; charset=utf-8", "cache-control":"no-store",
-    "access-control-allow-origin": env?.APP_ORIGIN || "*", "access-control-allow-methods":"GET,POST,OPTIONS",
+    "access-control-allow-origin": env?.APP_ORIGIN || "*", "access-control-allow-methods":"GET,POST,PATCH,OPTIONS",
     "access-control-allow-headers":"content-type,authorization,x-api-key,x-admin-secret",
     "x-content-type-options":"nosniff", "referrer-policy":"strict-origin-when-cross-origin" }
 });
@@ -82,19 +83,54 @@ async function inspect(req:Request,env:Env,kind:string){
     return json({ok:true,data:{...base,technologies:[...new Set(tech)],title}},200,env);
   }catch(e){return json({error:"Analysis failed",detail:(e as Error).message},502,env);}
 }
-async function handle(req:Request,env:Env){
-  const u=new URL(req.url);
-  if(req.method==="OPTIONS")return new Response(null,{headers:{"access-control-allow-origin":env.APP_ORIGIN||"*","access-control-allow-methods":"GET,POST,OPTIONS","access-control-allow-headers":"content-type,authorization,x-api-key,x-admin-secret"}});
-  if(u.pathname==="/health")return json({ok:true,name:env.APP_NAME,version:"1.1.0"},200,env);
-  if(u.pathname==="/v1/admin/keys"&&req.method==="POST"){
-    if(!env.ADMIN_SECRET||req.headers.get("x-admin-secret")!==env.ADMIN_SECRET)return json({error:"Forbidden"},403,env);
-    const body:any=await req.json().catch(()=>({})), email=String(body.email||"").trim().toLowerCase(), plan=String(body.plan||"free");
-    if(!email.includes("@")||!(plan in PLAN_LIMITS))return json({error:"Valid email and plan required"},400,env);
+async function admin(req:Request,env:Env){
+  if(!env.ADMIN_SECRET || req.headers.get("x-admin-secret")!==env.ADMIN_SECRET) return json({error:"Unauthorized admin access"},401,env);
+  const url=new URL(req.url), path=url.pathname, day=new Date().toISOString().slice(0,10);
+  if(path==="/v1/admin/overview" && req.method==="GET"){
+    const row=await env.DB.prepare("SELECT (SELECT COUNT(*) FROM users) AS total_users,(SELECT COUNT(*) FROM api_keys WHERE revoked=0) AS active_keys,(SELECT COALESCE(SUM(request_count),0) FROM usage_daily WHERE day=?) AS requests_today,(SELECT COUNT(*) FROM payment_requests WHERE status='pending') AS pending_payments").bind(day).first<any>();
+    return json({ok:true,stats:row},200,env);
+  }
+  if(path==="/v1/admin/users" && req.method==="GET"){
+    const rows=await env.DB.prepare("SELECT u.id,u.email,u.plan,u.status,u.created_at,(SELECT COUNT(*) FROM api_keys k WHERE k.user_id=u.id AND k.revoked=0) AS active_keys,(SELECT COALESCE(request_count,0) FROM usage_daily d WHERE d.user_id=u.id AND d.day=?) AS requests_today FROM users u ORDER BY u.created_at DESC LIMIT 200").bind(day).all<any>();
+    return json({ok:true,users:rows.results||[]},200,env);
+  }
+  if(path==="/v1/admin/keys" && req.method==="GET"){
+    const rows=await env.DB.prepare("SELECT k.id,k.key_prefix,k.label,k.revoked,k.created_at,k.last_used_at,u.email,u.plan FROM api_keys k JOIN users u ON u.id=k.user_id ORDER BY k.created_at DESC LIMIT 200").all<any>();
+    return json({ok:true,keys:rows.results||[]},200,env);
+  }
+  if(path==="/v1/admin/keys" && req.method==="POST"){
+    const body:any=await req.json().catch(()=>({})), email=String(body.email||"").trim().toLowerCase(), plan=String(body.plan||"free"), label=String(body.label||"Default").slice(0,80);
+    if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)||!PLANS.includes(plan))return json({error:"Valid email and plan required"},400,env);
     let user=await env.DB.prepare("SELECT id FROM users WHERE email=?").bind(email).first<any>();
     if(!user){const id=uid();await env.DB.prepare("INSERT INTO users(id,email,password_salt,password_hash,plan,status) VALUES(?,?, '', '', ?, 'active')").bind(id,email,plan).run();user={id};}
-    const key=token(), id=uid();await env.DB.prepare("INSERT INTO api_keys(id,user_id,key_hash,key_prefix,label) VALUES(?,?,?,?,?)").bind(id,user.id,await hash(key),key.slice(0,15),String(body.label||"Default")).run();
+    else await env.DB.prepare("UPDATE users SET plan=? WHERE id=?").bind(plan,user.id).run();
+    const key=token(), id=uid();
+    await env.DB.prepare("INSERT INTO api_keys(id,user_id,key_hash,key_prefix,label) VALUES(?,?,?,?,?)").bind(id,user.id,await hash(key),key.slice(0,15),label).run();
     return json({ok:true,email,plan,api_key:key,note:"Copy this key now. It is shown only once."},201,env);
   }
+  const revoke=path.match(/^\/v1\/admin\/keys\/([a-f0-9-]+)\/revoke$/i);
+  if(revoke && req.method==="POST"){
+    const r=await env.DB.prepare("UPDATE api_keys SET revoked=1 WHERE id=?").bind(revoke[1]).run();
+    if(!r.meta?.changes)return json({error:"API key not found"},404,env);
+    return json({ok:true,message:"API key revoked"},200,env);
+  }
+  const userMatch=path.match(/^\/v1\/admin\/users\/([a-f0-9-]+)$/i);
+  if(userMatch && req.method==="PATCH"){
+    const body:any=await req.json().catch(()=>({})), plan=body.plan===undefined?null:String(body.plan), status=body.status===undefined?null:String(body.status);
+    if(plan!==null&&!PLANS.includes(plan))return json({error:"Invalid plan"},400,env);
+    if(status!==null&&!["active","suspended"].includes(status))return json({error:"Status must be active or suspended"},400,env);
+    if(plan===null&&status===null)return json({error:"No supported changes supplied"},400,env);
+    const r=await env.DB.prepare("UPDATE users SET plan=COALESCE(?,plan),status=COALESCE(?,status) WHERE id=?").bind(plan,status,userMatch[1]).run();
+    if(!r.meta?.changes)return json({error:"User not found or unchanged"},404,env);
+    return json({ok:true,message:"User updated"},200,env);
+  }
+  return json({error:"Admin endpoint not found"},404,env);
+}
+async function handle(req:Request,env:Env){
+  const u=new URL(req.url);
+  if(req.method==="OPTIONS")return new Response(null,{headers:{"access-control-allow-origin":env.APP_ORIGIN||"*","access-control-allow-methods":"GET,POST,PATCH,OPTIONS","access-control-allow-headers":"content-type,authorization,x-api-key,x-admin-secret"}});
+  if(u.pathname==="/health")return json({ok:true,name:env.APP_NAME,version:"1.2.0"},200,env);
+  if(u.pathname.startsWith("/v1/admin/"))return admin(req,env);
   if(u.pathname==="/v1/account/usage"){
     const user=await apiUser(req,env);if(!user)return json({error:"Valid API key required"},401,env);
     const day=new Date().toISOString().slice(0,10), row=await env.DB.prepare("SELECT request_count FROM usage_daily WHERE user_id=? AND day=?").bind(user.id,day).first<any>();
