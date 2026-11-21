@@ -1,0 +1,48 @@
+openapi: 3.1.0
+info:
+  title: LiaquatX Intelligence API
+  version: 1.1.0
+  description: Website health, SEO metadata, security headers and technology detection.
+servers:
+  - url: https://YOUR-WORKER.workers.dev
+components:
+  securitySchemes:
+    ApiKey:
+      type: apiKey
+      in: header
+      name: x-api-key
+  parameters:
+    TargetUrl:
+      name: url
+      in: query
+      required: true
+      schema: { type: string, format: uri }
+paths:
+  /health:
+    get:
+      security: []
+      responses: {'200': {description: Worker health}}
+  /v1/website/check:
+    get:
+      security: [{ApiKey: []}]
+      parameters: [{$ref: '#/components/parameters/TargetUrl'}]
+      responses: {'200': {description: Website status}}
+  /v1/website/seo:
+    get:
+      security: [{ApiKey: []}]
+      parameters: [{$ref: '#/components/parameters/TargetUrl'}]
+      responses: {'200': {description: SEO metadata}}
+  /v1/website/headers:
+    get:
+      security: [{ApiKey: []}]
+      parameters: [{$ref: '#/components/parameters/TargetUrl'}]
+      responses: {'200': {description: Security header report}}
+  /v1/website/technologies:
+    get:
+      security: [{ApiKey: []}]
+      parameters: [{$ref: '#/components/parameters/TargetUrl'}]
+      responses: {'200': {description: Technology fingerprints}}
+  /v1/account/usage:
+    get:
+      security: [{ApiKey: []}]
+      responses: {'200': {description: API usage}}
